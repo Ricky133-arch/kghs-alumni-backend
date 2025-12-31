@@ -15,14 +15,21 @@ console.log('Paystack Secret Key loaded:', process.env.PAYSTACK_SECRET_KEY ? 'YE
 console.log('Paystack Secret Key value:', process.env.PAYSTACK_SECRET_KEY);
 const app = express();
 app.use(express.json());
-app.use(cors());
 
-// Nodemailer Transporter
+// === FIXED: Proper CORS for live frontend ===
+app.use(cors({
+  origin: 'https://kghs-frontend.onrender.com', // Your live frontend URL
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+// === FIXED: Reliable email with Brevo (formerly Sendinblue) ===
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp-relay.brevo.com',
+  port: 587,
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
+    user: process.env.EMAIL_USER,     // Your Brevo sender email
+    pass: process.env.EMAIL_PASS,     // Your Brevo SMTP key
   },
 });
 
@@ -368,7 +375,6 @@ app.post('/api/board-minutes', authMiddleware, adminMiddleware, upload.single('f
     res.status(500).json({ msg: 'Upload failed' });
   }
 });
-
 // Admin Routes
 app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) => {
   const users = await User.find().select('-password');
@@ -396,7 +402,7 @@ app.put('/api/admin/users/:id', authMiddleware, adminMiddleware, async (req, res
               You can now log in and connect with fellow graduates, share memories, and stay updated on events.
             </p>
             <div style="text-align: center; margin: 40px 0;">
-              <a href="http://localhost:5174/login" style="background: #FFC0CB; color: white; padding: 15px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold;">
+              <a href="https://kghs-frontend.onrender.com/login" style="background: #FFC0CB; color: white; padding: 15px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold;">
                 Log In Now
               </a>
             </div>
