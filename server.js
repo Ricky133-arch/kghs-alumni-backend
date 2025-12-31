@@ -369,49 +369,6 @@ app.post('/api/board-minutes', authMiddleware, adminMiddleware, upload.single('f
   }
 });
 
-// === FINANCE SHOWCASE SUPPORT ===
-
-// Public: View recent donations (for showcase on home page)
-app.get('/api/public/donations', async (req, res) => {
-  try {
-    const donations = await Donation.find()
-      .populate('donor', 'name')
-      .sort({ date: -1 })
-      .limit(50);
-    res.json(donations);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ msg: 'Error loading donations' });
-  }
-});
-
-// Admin: Manually record a bank transfer donation
-app.post('/api/donations/manual', authMiddleware, adminMiddleware, async (req, res) => {
-  const { amount, donorName } = req.body;
-
-  if (!amount || amount < 1) {
-    return res.status(400).json({ msg: 'Valid amount is required' });
-  }
-
-  try {
-    let donor = null;
-    if (donorName) {
-      donor = await User.findOne({ name: new RegExp(`^${donorName}$`, 'i') });
-    }
-
-    const donation = new Donation({
-      amount,
-      donor: donor ? donor._id : null,
-    });
-
-    await donation.save();
-    res.json({ message: 'Donation recorded successfully', donation });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ msg: 'Failed to record donation' });
-  }
-});
-
 // Admin Routes
 app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) => {
   const users = await User.find().select('-password');
