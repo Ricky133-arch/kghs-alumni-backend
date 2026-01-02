@@ -66,6 +66,8 @@ const userSchema = new mongoose.Schema({
   profilePic: String,
   role: { type: String, default: 'alumni' },
   isApproved: { type: Boolean, default: false },
+  resetPasswordToken: { type: String },
+  resetPasswordExpires: { type: Date },
 });
 const User = mongoose.model('User', userSchema);
 
@@ -199,6 +201,110 @@ app.post('/api/auth/login', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ msg: 'Server error' });
+  }
+});
+
+// === FORGOT PASSWORD ROUTE ===
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ msg: 'Please provide your email' });
+  }
+
+  try {
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      // Security: don't reveal if email exists
+      return res.json({ msg: 'If your email is registered, you will receive a reset link shortly' });
+    }
+
+    // Generate reset token (expires in 1 hour)
+    const resetToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    // Save token to user
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+    await user.save();
+
+    const resetUrl = `https://kghs-frontend.onrender.com/reset-password/${resetToken}`;
+
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: user.email,
+      subject: 'KGHS Alumni Foundation - Password Reset Request',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 30px; background: #fff5fb; border-radius: 15px; box-shadow: 0 10px 30px rgba(255,192,203,0.2);">
+          <h1 style="color: #ff69b4; text-align: center;">Password Reset Request</h1>
+          <p style="font-size: 18px; color: #333;">Dear ${user.name || 'Sister'},</p>
+          <p style="font-size: 16px; line-height: 1.6; color: #555;">
+            We received a request to reset your password for your KGHS Alumni account.
+          </p>
+          <p style="font-size: 16px; line-height: 1.6; color: #555;">
+            Click the button below to set a new password. This link expires in <strong>1 hour</strong>.
+          </p>
+          <div style="text-align: center; margin: 40px 0;">
+            <a href="${resetUrl}" style="background: #ff69b4; color: white; padding: 18px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold; display: inline-block;">
+              Reset My Password
+            </a>
+          </div>
+          <p style="color: #777; font-size: 14px; line-height: 1.6;">
+            If you didn't request this, please ignore this email — your password will remain unchanged.<br><br>
+            With love,<br>
+            <strong>The KGHS Alumni Team</strong>
+          </p>
+        </div>
+      `,
+    };
+
+    try {
+      await transporter.sendMail(mailOptions);
+      console.log('Password reset email sent to:', user.email);
+    } catch (emailErr) {
+      console.error('Failed to send reset email:', emailErr);
+      // Don't fail the whole request if email fails
+    }
+
+    res.json({ msg: 'If your email is registered, you will receive a reset link shortly' });
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    res.status(500).json({ msg: 'Server error. Please try again later.' });
+  }
+});
+
+// === RESET PASSWORD ROUTE ===
+app.post('/api/auth/reset-password/:token', async (req, res) => {
+  const { password } = req.body;
+
+  if (!password || password.length < 6) {
+    return res.status(400).json({ msg: 'Password must be at least 6 characters' });
+  }
+
+  try {
+    const user = await User.findOne({
+      resetPasswordToken: req.params.token,
+      resetPasswordExpires: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ msg: 'Invalid or expired reset link' });
+    }
+
+    // Hash new password
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(password, salt);
+
+    // Clear reset fields
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+    await user.save();
+
+    console.log('Password successfully reset for:', user.email);
+
+    res.json({ msg: 'Password reset successful! You can now log in.' });
+  } catch (err) {
+    console.error('Reset password error:', err);
+    res.status(500).json({ msg: 'Server error. Please try again.' });
   }
 });
 
@@ -412,7 +518,13 @@ app.put('/api/admin/users/:id', authMiddleware, adminMiddleware, async (req, res
           </div>
         `,
       };
-      await transporter.sendMail(mailOptions);
+      try {
+        await transporter.sendMail(mailOptions);
+        console.log('Approval email sent to:', user.email);
+      } catch (emailErr) {
+        console.error('Failed to send approval email:', emailErr);
+        // Don't fail approval if email fails
+      }
     }
 
     res.json(user);
