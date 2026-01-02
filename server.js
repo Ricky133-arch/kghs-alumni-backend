@@ -33,6 +33,9 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// === NEW: Import Brevo API sendEmail utility ===
+const sendEmail = require('./utils/sendEmail');
+
 // Cloudinary Config
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -229,36 +232,34 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
     const resetUrl = `https://kghs-frontend.onrender.com/reset-password/${resetToken}`;
 
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: user.email,
-      subject: 'KGHS Alumni Foundation - Password Reset Request',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 30px; background: #fff5fb; border-radius: 15px; box-shadow: 0 10px 30px rgba(255,192,203,0.2);">
-          <h1 style="color: #ff69b4; text-align: center;">Password Reset Request</h1>
-          <p style="font-size: 18px; color: #333;">Dear ${user.name || 'Sister'},</p>
-          <p style="font-size: 16px; line-height: 1.6; color: #555;">
-            We received a request to reset your password for your KGHS Alumni account.
-          </p>
-          <p style="font-size: 16px; line-height: 1.6; color: #555;">
-            Click the button below to set a new password. This link expires in <strong>1 hour</strong>.
-          </p>
-          <div style="text-align: center; margin: 40px 0;">
-            <a href="${resetUrl}" style="background: #ff69b4; color: white; padding: 18px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold; display: inline-block;">
-              Reset My Password
-            </a>
-          </div>
-          <p style="color: #777; font-size: 14px; line-height: 1.6;">
-            If you didn't request this, please ignore this email — your password will remain unchanged.<br><br>
-            With love,<br>
-            <strong>The KGHS Alumni Team</strong>
-          </p>
-        </div>
-      `,
-    };
-
     try {
-      await transporter.sendMail(mailOptions);
+      await sendEmail({
+        to: user.email,
+        toName: user.name || '',
+        subject: 'KGHS Alumni Foundation - Password Reset Request',
+        htmlContent: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 30px; background: #fff5fb; border-radius: 15px; box-shadow: 0 10px 30px rgba(255,192,203,0.2);">
+            <h1 style="color: #ff69b4; text-align: center;">Password Reset Request</h1>
+            <p style="font-size: 18px; color: #333;">Dear ${user.name || 'Sister'},</p>
+            <p style="font-size: 16px; line-height: 1.6; color: #555;">
+              We received a request to reset your password for your KGHS Alumni account.
+            </p>
+            <p style="font-size: 16px; line-height: 1.6; color: #555;">
+              Click the button below to set a new password. This link expires in <strong>1 hour</strong>.
+            </p>
+            <div style="text-align: center; margin: 40px 0;">
+              <a href="${resetUrl}" style="background: #ff69b4; color: white; padding: 18px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold; display: inline-block;">
+                Reset My Password
+              </a>
+            </div>
+            <p style="color: #777; font-size: 14px; line-height: 1.6;">
+              If you didn't request this, please ignore this email — your password will remain unchanged.<br><br>
+              With love,<br>
+              <strong>The KGHS Alumni Team</strong>
+            </p>
+          </div>
+        `,
+      });
       console.log('Password reset email sent to:', user.email);
     } catch (emailErr) {
       console.error('Failed to send reset email:', emailErr);
@@ -493,33 +494,32 @@ app.put('/api/admin/users/:id', authMiddleware, adminMiddleware, async (req, res
     const user = await User.findByIdAndUpdate(req.params.id, { isApproved }, { new: true }).select('-password');
 
     if (isApproved) {
-      const mailOptions = {
-        from: process.env.EMAIL_USER,
-        to: user.email,
-        subject: '🎉 Your KGHS Alumni Account Has Been Approved!',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 30px; background: #fff; border-radius: 15px; box-shadow: 0 10px 30px rgba(255,192,203,0.2);">
-            <h1 style="color: #FFC0CB; text-align: center;">Welcome to the Family!</h1>
-            <p style="font-size: 18px; color: #333;">Dear ${user.name},</p>
-            <p style="font-size: 16px; line-height: 1.6; color: #555;">
-              Congratulations! Your KGHS Alumni Network account has been <strong>approved</strong>.
-            </p>
-            <p style="font-size: 16px; line-height: 1.6; color: #555;">
-              You can now log in and connect with fellow graduates, share memories, and stay updated on events.
-            </p>
-            <div style="text-align: center; margin: 40px 0;">
-              <a href="https://kghs-frontend.onrender.com/login" style="background: #FFC0CB; color: white; padding: 15px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold;">
-                Log In Now
-              </a>
-            </div>
-            <p style="color: #777; font-size: 14px; text-align: center;">
-              Warm regards,<br><strong>The KGHS Alumni Team</strong>
-            </p>
-          </div>
-        `,
-      };
       try {
-        await transporter.sendMail(mailOptions);
+        await sendEmail({
+          to: user.email,
+          toName: user.name || '',
+          subject: '🎉 Your KGHS Alumni Account Has Been Approved!',
+          htmlContent: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 30px; background: #fff; border-radius: 15px; box-shadow: 0 10px 30px rgba(255,192,203,0.2);">
+              <h1 style="color: #FFC0CB; text-align: center;">Welcome to the Family!</h1>
+              <p style="font-size: 18px; color: #333;">Dear ${user.name},</p>
+              <p style="font-size: 16px; line-height: 1.6; color: #555;">
+                Congratulations! Your KGHS Alumni Network account has been <strong>approved</strong>.
+              </p>
+              <p style="font-size: 16px; line-height: 1.6; color: #555;">
+                You can now log in and connect with fellow graduates, share memories, and stay updated on events.
+              </p>
+              <div style="text-align: center; margin: 40px 0;">
+                <a href="https://kghs-frontend.onrender.com/login" style="background: #FFC0CB; color: white; padding: 15px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold;">
+                  Log In Now
+                </a>
+              </div>
+              <p style="color: #777; font-size: 14px; text-align: center;">
+                Warm regards,<br><strong>The KGHS Alumni Team</strong>
+              </p>
+            </div>
+          `,
+        });
         console.log('Approval email sent to:', user.email);
       } catch (emailErr) {
         console.error('Failed to send approval email:', emailErr);
