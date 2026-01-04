@@ -16,11 +16,16 @@ console.log('Paystack Secret Key value:', process.env.PAYSTACK_SECRET_KEY);
 const app = express();
 app.use(express.json());
 
-// === FIXED: Proper CORS for live frontend ===
+// === UPDATED CORS: Allow both old Render URL and new custom domain ===
 app.use(cors({
-  origin: 'https://kghs-frontend.onrender.com', // Your live frontend URL
+  origin: [
+    'https://kghs-frontend.onrender.com',
+    'https://kghsalumnae.org',
+    'https://www.kghsalumnae.org'
+  ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
 }));
 
 // === FIXED: Reliable email with Brevo (formerly Sendinblue) ===
@@ -230,7 +235,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
     await user.save();
 
-    const resetUrl = `https://kghs-frontend.onrender.com/reset-password/${resetToken}`;
+    const resetUrl = `https://kghsalumnae.org/reset-password/${resetToken}`;
 
     try {
       await sendEmail({
@@ -510,7 +515,7 @@ app.put('/api/admin/users/:id', authMiddleware, adminMiddleware, async (req, res
                 You can now log in and connect with fellow graduates, share memories, and stay updated on events.
               </p>
               <div style="text-align: center; margin: 40px 0;">
-                <a href="https://kghs-frontend.onrender.com/login" style="background: #FFC0CB; color: white; padding: 15px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold;">
+                <a href="https://kghsalumnae.org/login" style="background: #FFC0CB; color: white; padding: 15px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold;">
                   Log In Now
                 </a>
               </div>
