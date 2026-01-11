@@ -465,26 +465,89 @@ app.get('/api/board-minutes', authMiddleware, async (req, res) => {
     const minutes = await BoardMinute.find().sort({ date: -1 });
     res.json(minutes);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ msg: 'Server error' });
+    console.error('Error fetching board minutes:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error while fetching board minutes' 
+    });
   }
 });
 
 app.post('/api/board-minutes', authMiddleware, adminMiddleware, upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ msg: 'PDF file is required' });
-    if (!req.body.title) return res.status(400).json({ msg: 'Title is required' });
+    // ────────────────────────────────────────────────────────────────
+    //                  DEBUG LOGGING (very useful on Render)
+    // ────────────────────────────────────────────────────────────────
+    console.log('╔════════════════════════════════════════════════════╗');
+    console.log('📄 BOARD MINUTES UPLOAD REQUEST');
+    console.log('Time:', new Date().toISOString());
+    console.log('Admin user ID:', req.user?.id || '(not set)');
+    console.log('File received?', !!req.file);
+    
+    if (req.file) {
+      console.log('  • Original name:', req.file.originalname);
+      console.log('  • Size:', `${(req.file.size / 1024).toFixed(2)} KB`);
+      console.log('  • MIME type:', req.file.mimetype);
+      console.log('  • Cloudinary path:', req.file.path || '(not generated)');
+    } else {
+      console.log('  ❌ NO FILE RECEIVED');
+      console.log('     Possible issues:');
+      console.log('     • Form field name must be exactly "file"');
+      console.log('     • Request must be multipart/form-data');
+      console.log('     • No file selected or file corrupted');
+    }
+    
+    console.log('Title:', req.body.title || '(missing)');
+    console.log('╚════════════════════════════════════════════════════╝');
+    // ────────────────────────────────────────────────────────────────
+
+    if (!req.file) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'PDF file is required (field name must be "file")' 
+      });
+    }
+
+    if (req.file.size > 10 * 1024 * 1024) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'File too large. Maximum allowed size is 10MB' 
+      });
+    }
+
+    if (!req.file.mimetype.includes('pdf')) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Only PDF files are allowed' 
+      });
+    }
+
+    if (!req.body.title?.trim()) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Title is required' 
+      });
+    }
 
     const minute = new BoardMinute({
-      title: req.body.title,
+      title: req.body.title.trim(),
       fileUrl: req.file.path, // Cloudinary URL
     });
 
     await minute.save();
-    res.json(minute);
+
+    res.status(201).json({
+      success: true,
+      message: 'Board minutes uploaded successfully',
+      data: minute
+    });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ msg: 'Upload failed' });
+    console.error('Board minutes upload error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to upload board minutes',
+      error: err.message 
+    });
   }
 });
 // Admin Routes
