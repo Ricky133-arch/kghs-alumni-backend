@@ -14,6 +14,71 @@ dotenv.config();
 console.log('Paystack Secret Key loaded:', process.env.PAYSTACK_SECRET_KEY ? 'YES' : 'NO');
 console.log('Paystack Secret Key value:', process.env.PAYSTACK_SECRET_KEY);
 const app = express();
+
+// IMPORTANT: File upload routes MUST come BEFORE express.json()
+// because express.json() rejects multipart/form-data requests
+
+// === BOARD MINUTES ROUTES (moved here first) ===
+app.get('/api/board-minutes', authMiddleware, async (req, res) => {
+  try {
+    const minutes = await BoardMinute.find().sort({ date: -1 });
+    res.json(minutes);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ msg: 'Server error' });
+  }
+});
+
+app.post('/api/board-minutes', authMiddleware, adminMiddleware, upload.single('file'), async (req, res) => {
+  // Detailed logging for debugging
+  console.log('Board minutes upload request received');
+  console.log('Body:', req.body);
+  console.log('File received:', req.file ? 'YES' : 'NO');
+  if (req.file) {
+    console.log('File details:', {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      path: req.file.path
+    });
+  }
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({ msg: 'PDF file is required' });
+    }
+    if (!req.body.title) {
+      return res.status(400).json({ msg: 'Title is required' });
+    }
+
+    const minute = new BoardMinute({
+      title: req.body.title,
+      fileUrl: req.file.path, // Cloudinary URL
+    });
+
+    await minute.save();
+    res.json(minute);
+  } catch (err) {
+    console.error('Board minutes upload error:', err);
+    res.status(500).json({ 
+      msg: 'Upload failed', 
+      details: err.message || 'Unknown error' 
+    });
+  }
+});
+
+// === GALLERY ROUTE (also file upload - moved here first) ===
+app.post('/api/gallery', authMiddleware, upload.single('image'), async (req, res) => {
+  const image = new Gallery({ 
+    url: req.file.path, 
+    caption: req.body.caption, 
+    uploader: req.user.id 
+  });
+  await image.save();
+  res.json(image);
+});
+
+// Now it's safe to add JSON parsing for all other routes
 app.use(express.json());
 
 // === UPDATED CORS: Allow both old Render URL and new custom domain ===
@@ -459,34 +524,7 @@ app.get('/api/donations', authMiddleware, adminMiddleware, async (req, res) => {
   const donations = await Donation.find().populate('donor', 'name').sort({ date: -1 });
   res.json(donations);
 });
-// === BOARD MINUTES ROUTES ===
-app.get('/api/board-minutes', authMiddleware, async (req, res) => {
-  try {
-    const minutes = await BoardMinute.find().sort({ date: -1 });
-    res.json(minutes);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ msg: 'Server error' });
-  }
-});
 
-app.post('/api/board-minutes', authMiddleware, adminMiddleware, upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ msg: 'PDF file is required' });
-    if (!req.body.title) return res.status(400).json({ msg: 'Title is required' });
-
-    const minute = new BoardMinute({
-      title: req.body.title,
-      fileUrl: req.file.path, // Cloudinary URL
-    });
-
-    await minute.save();
-    res.json(minute);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ msg: 'Upload failed' });
-  }
-});
 // Admin Routes
 app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) => {
   const users = await User.find().select('-password');
