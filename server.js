@@ -14,106 +14,9 @@ dotenv.config();
 console.log('Paystack Secret Key loaded:', process.env.PAYSTACK_SECRET_KEY ? 'YES' : 'NO');
 console.log('Paystack Secret Key value:', process.env.PAYSTACK_SECRET_KEY);
 const app = express();
-
-// === MOVED MIDDLEWARES TO TOP (fixes ReferenceError) ===
-const authMiddleware = (req, res, next) => {
-  const token = req.header('Authorization')?.replace('Bearer ', '');
-  if (!token) return res.status(401).json({ msg: 'No token' });
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch (err) {
-    res.status(401).json({ msg: 'Invalid token' });
-  }
-};
-
-const adminMiddleware = async (req, res, next) => {
-  const user = await User.findById(req.user.id);
-  if (!user || user.role !== 'admin') return res.status(403).json({ msg: 'Admin access required' });
-  next();
-};
-
-// IMPORTANT: File upload routes FIRST (before express.json() to avoid multipart rejection)
-const storage = new CloudinaryStorage({
-  cloudinary,
-  params: {
-    folder: 'kghs',
-    resource_type: 'auto', // Important: allows PDFs and images
-  },
-});
-const upload = multer({ storage });
-
-// === BOARD MINUTES ROUTES ===
-app.get('/api/board-minutes', authMiddleware, async (req, res) => {
-  try {
-    const minutes = await BoardMinute.find().sort({ date: -1 });
-    res.json(minutes);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ msg: 'Server error' });
-  }
-});
-
-app.post('/api/board-minutes', authMiddleware, adminMiddleware, upload.single('file'), async (req, res) => {
-  // Detailed logging for debugging
-  console.log('Board minutes upload request received');
-  console.log('Body:', req.body);
-  console.log('File received:', req.file ? 'YES' : 'NO');
-  if (req.file) {
-    console.log('File details:', {
-      originalname: req.file.originalname,
-      mimetype: req.file.mimetype,
-      size: req.file.size,
-      path: req.file.path
-    });
-  }
-
-  try {
-    if (!req.file) return res.status(400).json({ msg: 'PDF file is required' });
-    if (!req.body.title) return res.status(400).json({ msg: 'Title is required' });
-
-    const minute = new BoardMinute({
-      title: req.body.title,
-      fileUrl: req.file.path, // Cloudinary URL
-    });
-
-    await minute.save();
-    res.json(minute);
-  } catch (err) {
-    console.error('Board minutes upload error:', err);
-    res.status(500).json({ 
-      msg: 'Upload failed', 
-      details: err.message || 'Unknown error' 
-    });
-  }
-});
-
-// === GALLERY ROUTE (file upload) ===
-app.post('/api/gallery', authMiddleware, upload.single('image'), async (req, res) => {
-  const image = new Gallery({ 
-    url: req.file.path, 
-    caption: req.body.caption, 
-    uploader: req.user.id 
-  });
-  await image.save();
-  res.json(image);
-});
-
-// === PROFILE ROUTE (file upload for profile pic) ===
-app.put('/api/profile', authMiddleware, upload.single('profilePic'), async (req, res) => {
-  const { name, graduationYear, bio, location } = req.body;
-  const updateData = { name, graduationYear, bio, location };
-  if (req.file) updateData.profilePic = req.file.path;
-
-  const user = await User.findByIdAndUpdate(req.user.id, updateData, { new: true }).select('-password');
-  res.json(user);
-});
-
-// Now it's safe to parse JSON for all other routes
 app.use(express.json());
 
-// === UPDATED CORS ===
+// === UPDATED CORS: Allow both old Render URL and new custom domain ===
 app.use(cors({
   origin: [
     'https://kghs-frontend.onrender.com',
@@ -125,13 +28,13 @@ app.use(cors({
   credentials: true,
 }));
 
-// === FIXED: Reliable email with Brevo ===
+// === FIXED: Reliable email with Brevo (formerly Sendinblue) ===
 const transporter = nodemailer.createTransport({
   host: 'smtp-relay.brevo.com',
   port: 587,
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
+    user: process.env.EMAIL_USER,     // Your Brevo sender email
+    pass: process.env.EMAIL_PASS,     // Your Brevo SMTP key
   },
 });
 
@@ -144,6 +47,16 @@ cloudinary.config({
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+
+// Multer for Uploads (supports images and PDFs)
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'kghs',
+    resource_type: 'auto', // Important: allows PDFs and images
+  },
+});
+const upload = multer({ storage });
 
 // MongoDB Connect
 mongoose.connect(process.env.MONGO_URI)
@@ -218,6 +131,26 @@ const boardMinuteSchema = new mongoose.Schema({
   date: { type: Date, default: Date.now },
 });
 const BoardMinute = mongoose.model('BoardMinute', boardMinuteSchema);
+
+// Auth Middleware
+const authMiddleware = (req, res, next) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ msg: 'No token' });
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    res.status(401).json({ msg: 'Invalid token' });
+  }
+};
+
+// Admin Middleware
+const adminMiddleware = async (req, res, next) => {
+  const user = await User.findById(req.user.id);
+  if (!user || user.role !== 'admin') return res.status(403).json({ msg: 'Admin access required' });
+  next();
+};
 
 // Auth Routes
 app.post('/api/auth/signup', async (req, res) => {
@@ -456,6 +389,16 @@ app.get('/api/gallery', async (req, res) => {
   res.json(images);
 });
 
+app.post('/api/gallery', authMiddleware, upload.single('image'), async (req, res) => {
+  const image = new Gallery({ 
+    url: req.file.path, 
+    caption: req.body.caption, 
+    uploader: req.user.id 
+  });
+  await image.save();
+  res.json(image);
+});
+
 // Paystack Donations - Improved with detailed error logging
 app.post('/api/donations/create-payment', authMiddleware, async (req, res) => {
   const { amount, currency = 'NGN' } = req.body;
@@ -516,7 +459,34 @@ app.get('/api/donations', authMiddleware, adminMiddleware, async (req, res) => {
   const donations = await Donation.find().populate('donor', 'name').sort({ date: -1 });
   res.json(donations);
 });
+// === BOARD MINUTES ROUTES ===
+app.get('/api/board-minutes', authMiddleware, async (req, res) => {
+  try {
+    const minutes = await BoardMinute.find().sort({ date: -1 });
+    res.json(minutes);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ msg: 'Server error' });
+  }
+});
 
+app.post('/api/board-minutes', authMiddleware, adminMiddleware, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ msg: 'PDF file is required' });
+    if (!req.body.title) return res.status(400).json({ msg: 'Title is required' });
+
+    const minute = new BoardMinute({
+      title: req.body.title,
+      fileUrl: req.file.path, // Cloudinary URL
+    });
+
+    await minute.save();
+    res.json(minute);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ msg: 'Upload failed' });
+  }
+});
 // Admin Routes
 app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) => {
   const users = await User.find().select('-password');
