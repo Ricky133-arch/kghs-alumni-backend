@@ -460,7 +460,7 @@ app.get('/api/donations', authMiddleware, adminMiddleware, async (req, res) => {
   res.json(donations);
 });
 // === BOARD MINUTES ROUTES ===
-app.get('/api/board-minutes', authMiddleware, async (req, res) => {
+app.get('/api/board-minutes', async (req, res) => {  // ← No authMiddleware here
   try {
     const minutes = await BoardMinute.find().sort({ date: -1 });
     res.json(minutes);
