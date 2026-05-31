@@ -8,16 +8,18 @@ const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const crypto = require('crypto');
-const paystack = require('paystack-api')(process.env.PAYSTACK_SECRET_KEY);
 const nodemailer = require('nodemailer');
 
+// ✅ dotenv MUST come before anything that reads process.env
 dotenv.config();
+
+const paystack = require('paystack-api')(process.env.PAYSTACK_SECRET_KEY);
+
 console.log('Paystack Secret Key loaded:', process.env.PAYSTACK_SECRET_KEY ? 'YES' : 'NO');
 
 const app = express();
 
 // ─── WEBHOOK ROUTE (must come BEFORE express.json()) ─────────────────────────
-// Paystack sends raw body; express.raw() preserves it for signature verification
 app.post('/api/donations/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
     const hash = crypto
@@ -36,7 +38,6 @@ app.post('/api/donations/webhook', express.raw({ type: 'application/json' }), as
     if (event.event === 'charge.success') {
       const { reference, amount, metadata } = event.data;
 
-      // Guard against duplicate webhook deliveries
       const exists = await Donation.findOne({ reference });
       if (!exists) {
         await Donation.create({
@@ -60,7 +61,6 @@ app.post('/api/donations/webhook', express.raw({ type: 'application/json' }), as
 // ─── Standard middleware ──────────────────────────────────────────────────────
 app.use(express.json());
 
-// === CORS: Allow both old Render URL and custom domain ===
 app.use(cors({
   origin: [
     'https://kghs-frontend.onrender.com',
@@ -72,7 +72,6 @@ app.use(cors({
   credentials: true,
 }));
 
-// === Email with Brevo (formerly Sendinblue) ===
 const transporter = nodemailer.createTransport({
   host: 'smtp-relay.brevo.com',
   port: 587,
@@ -82,17 +81,14 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// === Import Brevo API sendEmail utility ===
 const sendEmail = require('./utils/sendEmail');
 
-// Cloudinary Config
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Multer for Uploads (supports images and PDFs)
 const storage = new CloudinaryStorage({
   cloudinary,
   params: async (req, file) => {
@@ -106,7 +102,6 @@ const storage = new CloudinaryStorage({
 });
 const upload = multer({ storage });
 
-// MongoDB Connect
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB connected'))
   .catch(err => console.log(err));
@@ -138,12 +133,11 @@ const eventSchema = new mongoose.Schema({
 });
 const Event = mongoose.model('Event', eventSchema);
 
-// News schema: image kept for backwards compat, images[] for new posts
 const newsSchema = new mongoose.Schema({
   title: String,
   content: String,
-  image: String,       // legacy single-image field
-  images: [String],    // new: up to 3 Cloudinary URLs
+  image: String,
+  images: [String],
   author: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   date: { type: Date, default: Date.now },
 });
@@ -173,14 +167,11 @@ const Gallery = mongoose.model('Gallery', gallerySchema);
 const donationSchema = new mongoose.Schema({
   amount: Number,
   donor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  // reference: unique Paystack transaction ref — prevents duplicate records
-  // from both the webhook and the manual verify endpoint
   reference: { type: String, unique: true, sparse: true },
   date: { type: Date, default: Date.now },
 });
 const Donation = mongoose.model('Donation', donationSchema);
 
-// === BOARD MINUTES SCHEMA ===
 const boardMinuteSchema = new mongoose.Schema({
   title: { type: String, required: true },
   fileUrl: { type: String, required: true },
@@ -224,13 +215,7 @@ app.post('/api/auth/signup', async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    user = new User({
-      email,
-      password: hashedPassword,
-      name,
-      graduationYear,
-      isApproved: false,
-    });
+    user = new User({ email, password: hashedPassword, name, graduationYear, isApproved: false });
     await user.save();
 
     res.json({ msg: 'Signup successful! Your account is pending admin approval. You will receive an email when approved.' });
@@ -254,37 +239,22 @@ app.post('/api/auth/login', async (req, res) => {
     if (!isMatch) return res.status(400).json({ msg: 'Invalid credentials' });
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.json({
-      token,
-      user: {
-        id: user._id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-      },
-    });
+    res.json({ token, user: { id: user._id, email: user.email, name: user.name, role: user.role } });
   } catch (err) {
     console.error(err);
     res.status(500).json({ msg: 'Server error' });
   }
 });
 
-// === FORGOT PASSWORD ===
 app.post('/api/auth/forgot-password', async (req, res) => {
   const { email } = req.body;
-
-  if (!email) {
-    return res.status(400).json({ msg: 'Please provide your email' });
-  }
+  if (!email) return res.status(400).json({ msg: 'Please provide your email' });
 
   try {
     const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) {
-      return res.json({ msg: 'If your email is registered, you will receive a reset link shortly' });
-    }
+    if (!user) return res.json({ msg: 'If your email is registered, you will receive a reset link shortly' });
 
     const resetToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
-
     user.resetPasswordToken = resetToken;
     user.resetPasswordExpires = Date.now() + 3600000;
     await user.save();
@@ -300,22 +270,12 @@ app.post('/api/auth/forgot-password', async (req, res) => {
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 30px; background: #fff5fb; border-radius: 15px; box-shadow: 0 10px 30px rgba(255,192,203,0.2);">
             <h1 style="color: #ff69b4; text-align: center;">Password Reset Request</h1>
             <p style="font-size: 18px; color: #333;">Dear ${user.name || 'Sister'},</p>
-            <p style="font-size: 16px; line-height: 1.6; color: #555;">
-              We received a request to reset your password for your KGHS Alumni account.
-            </p>
-            <p style="font-size: 16px; line-height: 1.6; color: #555;">
-              Click the button below to set a new password. This link expires in <strong>1 hour</strong>.
-            </p>
+            <p style="font-size: 16px; line-height: 1.6; color: #555;">We received a request to reset your password for your KGHS Alumni account.</p>
+            <p style="font-size: 16px; line-height: 1.6; color: #555;">Click the button below to set a new password. This link expires in <strong>1 hour</strong>.</p>
             <div style="text-align: center; margin: 40px 0;">
-              <a href="${resetUrl}" style="background: #ff69b4; color: white; padding: 18px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold; display: inline-block;">
-                Reset My Password
-              </a>
+              <a href="${resetUrl}" style="background: #ff69b4; color: white; padding: 18px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold; display: inline-block;">Reset My Password</a>
             </div>
-            <p style="color: #777; font-size: 14px; line-height: 1.6;">
-              If you didn't request this, please ignore this email — your password will remain unchanged.<br><br>
-              With love,<br>
-              <strong>The KGHS Alumni Team</strong>
-            </p>
+            <p style="color: #777; font-size: 14px; line-height: 1.6;">If you didn't request this, please ignore this email — your password will remain unchanged.<br><br>With love,<br><strong>The KGHS Alumni Team</strong></p>
           </div>
         `,
       });
@@ -331,13 +291,9 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 });
 
-// === RESET PASSWORD ===
 app.post('/api/auth/reset-password/:token', async (req, res) => {
   const { password } = req.body;
-
-  if (!password || password.length < 6) {
-    return res.status(400).json({ msg: 'Password must be at least 6 characters' });
-  }
+  if (!password || password.length < 6) return res.status(400).json({ msg: 'Password must be at least 6 characters' });
 
   try {
     const user = await User.findOne({
@@ -345,9 +301,7 @@ app.post('/api/auth/reset-password/:token', async (req, res) => {
       resetPasswordExpires: { $gt: Date.now() },
     });
 
-    if (!user) {
-      return res.status(400).json({ msg: 'Invalid or expired reset link' });
-    }
+    if (!user) return res.status(400).json({ msg: 'Invalid or expired reset link' });
 
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(password, salt);
@@ -374,7 +328,6 @@ app.put('/api/profile', authMiddleware, upload.single('profilePic'), async (req,
   const { name, graduationYear, bio, location } = req.body;
   const updateData = { name, graduationYear, bio, location };
   if (req.file) updateData.profilePic = req.file.path;
-
   const user = await User.findByIdAndUpdate(req.user.id, updateData, { new: true }).select('-password');
   res.json(user);
 });
@@ -386,7 +339,6 @@ app.get('/api/directory', authMiddleware, async (req, res) => {
   const filter = { isApproved: true };
   if (year) filter.graduationYear = year;
   if (location) filter.location = { $regex: location, $options: 'i' };
-
   const users = await User.find(filter).select('-password -isApproved');
   res.json(users);
 });
@@ -413,21 +365,8 @@ app.get('/api/news', async (req, res) => {
 
 app.post('/api/news', authMiddleware, adminMiddleware, upload.array('images', 3), async (req, res) => {
   try {
-    console.log('📰 NEWS POST REQUEST');
-    console.log('Files received:', req.files ? req.files.length : 0);
-    if (req.files) {
-      req.files.forEach((f, i) => console.log(`  Image ${i + 1}:`, f.path));
-    }
-
     const imageUrls = req.files ? req.files.map(f => f.path) : [];
-
-    const newsItem = new News({
-      title: req.body.title,
-      content: req.body.content,
-      author: req.user.id,
-      images: imageUrls,
-    });
-
+    const newsItem = new News({ title: req.body.title, content: req.body.content, author: req.user.id, images: imageUrls });
     await newsItem.save();
     const populated = await newsItem.populate('author', 'name');
     res.json(populated);
@@ -475,11 +414,7 @@ app.get('/api/gallery', async (req, res) => {
 });
 
 app.post('/api/gallery', authMiddleware, upload.single('image'), async (req, res) => {
-  const image = new Gallery({
-    url: req.file.path,
-    caption: req.body.caption,
-    uploader: req.user.id,
-  });
+  const image = new Gallery({ url: req.file.path, caption: req.body.caption, uploader: req.user.id });
   await image.save();
   res.json(image);
 });
@@ -494,17 +429,21 @@ app.post('/api/donations/create-payment', authMiddleware, async (req, res) => {
       return res.status(400).json({ msg: 'Invalid amount' });
     }
 
+    // ✅ Fetch full user to get their real email
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ msg: 'User not found' });
+
     const validCurrency = currency.toUpperCase() === 'USD' ? 'USD' : 'NGN';
 
     const response = await paystack.transaction.initialize({
       amount: Math.round(amount * 100),
-      email: req.user.email || 'alumni@kghs.com',
+      email: user.email,  // ✅ real alumni email, not fallback
       currency: validCurrency,
       reference: `kghs-don-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-      // ✅ Fixed: now points to production domain, not localhost
       callback_url: 'https://kghsalumnae.org/donations/success',
       metadata: {
-        userId: req.user.id,
+        userId: user._id,
+        userName: user.name,
         currency: validCurrency,
       },
     });
@@ -522,7 +461,6 @@ app.get('/api/donations/verify/:reference', authMiddleware, async (req, res) => 
     const response = await paystack.transaction.verify(req.params.reference);
 
     if (response.data.status === 'success') {
-      // Check if webhook already recorded this donation
       const exists = await Donation.findOne({ reference: req.params.reference });
       if (!exists) {
         const donation = new Donation({
@@ -550,7 +488,6 @@ app.get('/api/donations', authMiddleware, adminMiddleware, async (req, res) => {
   res.json(donations);
 });
 
-// Public donations endpoint (used on homepage impact section)
 app.get('/api/public/donations', async (req, res) => {
   try {
     const donations = await Donation.find().select('amount date');
@@ -579,7 +516,6 @@ app.post('/api/board-minutes', authMiddleware, adminMiddleware, upload.single('f
     console.log('Time:', new Date().toISOString());
     console.log('Admin user ID:', req.user?.id || '(not set)');
     console.log('File received?', !!req.file);
-
     if (req.file) {
       console.log('  • Original name:', req.file.originalname);
       console.log('  • Size:', `${(req.file.size / 1024).toFixed(2)} KB`);
@@ -588,38 +524,18 @@ app.post('/api/board-minutes', authMiddleware, adminMiddleware, upload.single('f
     } else {
       console.log('  ❌ NO FILE RECEIVED');
     }
-
     console.log('Title:', req.body.title || '(missing)');
     console.log('╚════════════════════════════════════════════════════╝');
 
-    if (!req.file) {
-      return res.status(400).json({ success: false, message: 'PDF file is required (field name must be "file")' });
-    }
+    if (!req.file) return res.status(400).json({ success: false, message: 'PDF file is required (field name must be "file")' });
+    if (req.file.size > 10 * 1024 * 1024) return res.status(400).json({ success: false, message: 'File too large. Maximum allowed size is 10MB' });
+    if (!req.file.mimetype.includes('pdf')) return res.status(400).json({ success: false, message: 'Only PDF files are allowed' });
+    if (!req.body.title?.trim()) return res.status(400).json({ success: false, message: 'Title is required' });
 
-    if (req.file.size > 10 * 1024 * 1024) {
-      return res.status(400).json({ success: false, message: 'File too large. Maximum allowed size is 10MB' });
-    }
-
-    if (!req.file.mimetype.includes('pdf')) {
-      return res.status(400).json({ success: false, message: 'Only PDF files are allowed' });
-    }
-
-    if (!req.body.title?.trim()) {
-      return res.status(400).json({ success: false, message: 'Title is required' });
-    }
-
-    const minute = new BoardMinute({
-      title: req.body.title.trim(),
-      fileUrl: req.file.path,
-    });
-
+    const minute = new BoardMinute({ title: req.body.title.trim(), fileUrl: req.file.path });
     await minute.save();
 
-    res.status(201).json({
-      success: true,
-      message: 'Board minutes uploaded successfully',
-      data: minute,
-    });
+    res.status(201).json({ success: true, message: 'Board minutes uploaded successfully', data: minute });
   } catch (err) {
     console.error('Board minutes upload error:', err);
     res.status(500).json({ success: false, message: 'Failed to upload board minutes', error: err.message });
@@ -648,20 +564,12 @@ app.put('/api/admin/users/:id', authMiddleware, adminMiddleware, async (req, res
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 30px; background: #fff; border-radius: 15px; box-shadow: 0 10px 30px rgba(255,192,203,0.2);">
               <h1 style="color: #FFC0CB; text-align: center;">Welcome to the Family!</h1>
               <p style="font-size: 18px; color: #333;">Dear ${user.name},</p>
-              <p style="font-size: 16px; line-height: 1.6; color: #555;">
-                Congratulations! Your KGHS Alumni Network account has been <strong>approved</strong>.
-              </p>
-              <p style="font-size: 16px; line-height: 1.6; color: #555;">
-                You can now log in and connect with fellow graduates, share memories, and stay updated on events.
-              </p>
+              <p style="font-size: 16px; line-height: 1.6; color: #555;">Congratulations! Your KGHS Alumni Network account has been <strong>approved</strong>.</p>
+              <p style="font-size: 16px; line-height: 1.6; color: #555;">You can now log in and connect with fellow graduates, share memories, and stay updated on events.</p>
               <div style="text-align: center; margin: 40px 0;">
-                <a href="https://kghsalumnae.org/login" style="background: #FFC0CB; color: white; padding: 15px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold;">
-                  Log In Now
-                </a>
+                <a href="https://kghsalumnae.org/login" style="background: #FFC0CB; color: white; padding: 15px 40px; text-decoration: none; border-radius: 50px; font-size: 18px; font-weight: bold;">Log In Now</a>
               </div>
-              <p style="color: #777; font-size: 14px; text-align: center;">
-                Warm regards,<br><strong>The KGHS Alumni Team</strong>
-              </p>
+              <p style="color: #777; font-size: 14px; text-align: center;">Warm regards,<br><strong>The KGHS Alumni Team</strong></p>
             </div>
           `,
         });
