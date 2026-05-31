@@ -7,38 +7,82 @@ const dotenv = require('dotenv');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const crypto = require('crypto');
 const paystack = require('paystack-api')(process.env.PAYSTACK_SECRET_KEY);
 const nodemailer = require('nodemailer');
 
 dotenv.config();
 console.log('Paystack Secret Key loaded:', process.env.PAYSTACK_SECRET_KEY ? 'YES' : 'NO');
-console.log('Paystack Secret Key value:', process.env.PAYSTACK_SECRET_KEY);
+
 const app = express();
+
+// ─── WEBHOOK ROUTE (must come BEFORE express.json()) ─────────────────────────
+// Paystack sends raw body; express.raw() preserves it for signature verification
+app.post('/api/donations/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  try {
+    const hash = crypto
+      .createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
+      .update(req.body)
+      .digest('hex');
+
+    if (hash !== req.headers['x-paystack-signature']) {
+      console.warn('Webhook signature mismatch — ignoring request');
+      return res.status(401).send('Invalid signature');
+    }
+
+    const event = JSON.parse(req.body);
+    console.log('Paystack webhook event received:', event.event);
+
+    if (event.event === 'charge.success') {
+      const { reference, amount, metadata } = event.data;
+
+      // Guard against duplicate webhook deliveries
+      const exists = await Donation.findOne({ reference });
+      if (!exists) {
+        await Donation.create({
+          amount: amount / 100,
+          donor: metadata?.userId || null,
+          reference,
+        });
+        console.log(`Donation recorded via webhook: ₦${amount / 100} (ref: ${reference})`);
+      } else {
+        console.log(`Duplicate webhook ignored for ref: ${reference}`);
+      }
+    }
+
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('Webhook processing error:', err);
+    res.sendStatus(500);
+  }
+});
+
+// ─── Standard middleware ──────────────────────────────────────────────────────
 app.use(express.json());
 
-// === UPDATED CORS: Allow both old Render URL and new custom domain ===
+// === CORS: Allow both old Render URL and custom domain ===
 app.use(cors({
   origin: [
     'https://kghs-frontend.onrender.com',
     'https://kghsalumnae.org',
-    'https://www.kghsalumnae.org'
+    'https://www.kghsalumnae.org',
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
 }));
 
-// === FIXED: Reliable email with Brevo (formerly Sendinblue) ===
+// === Email with Brevo (formerly Sendinblue) ===
 const transporter = nodemailer.createTransport({
   host: 'smtp-relay.brevo.com',
   port: 587,
   auth: {
-    user: process.env.EMAIL_USER,     // Your Brevo sender email
-    pass: process.env.EMAIL_PASS,     // Your Brevo SMTP key
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
   },
 });
 
-// === NEW: Import Brevo API sendEmail utility ===
+// === Import Brevo API sendEmail utility ===
 const sendEmail = require('./utils/sendEmail');
 
 // Cloudinary Config
@@ -51,9 +95,13 @@ cloudinary.config({
 // Multer for Uploads (supports images and PDFs)
 const storage = new CloudinaryStorage({
   cloudinary,
-  params: {
-    folder: 'kghs',
-    resource_type: 'auto', // Important: allows PDFs and images
+  params: async (req, file) => {
+    const isPDF = file.mimetype === 'application/pdf';
+    return {
+      folder: 'kghs',
+      resource_type: isPDF ? 'raw' : 'image',
+      format: isPDF ? 'pdf' : undefined,
+    };
   },
 });
 const upload = multer({ storage });
@@ -63,7 +111,8 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB connected'))
   .catch(err => console.log(err));
 
-// Schemas
+// ─── Schemas ──────────────────────────────────────────────────────────────────
+
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
@@ -84,13 +133,17 @@ const eventSchema = new mongoose.Schema({
   description: String,
   date: Date,
   location: String,
+  type: { type: String, enum: ['gathering', 'birthday', 'reunion', 'memorial'], default: 'gathering' },
   creator: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 });
 const Event = mongoose.model('Event', eventSchema);
 
+// News schema: image kept for backwards compat, images[] for new posts
 const newsSchema = new mongoose.Schema({
   title: String,
   content: String,
+  image: String,       // legacy single-image field
+  images: [String],    // new: up to 3 Cloudinary URLs
   author: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   date: { type: Date, default: Date.now },
 });
@@ -101,10 +154,10 @@ const forumThreadSchema = new mongoose.Schema({
   content: String,
   author: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   date: { type: Date, default: Date.now },
-  replies: [{ 
-    content: String, 
-    author: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, 
-    date: { type: Date, default: Date.now } 
+  replies: [{
+    content: String,
+    author: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    date: { type: Date, default: Date.now },
   }],
 });
 const ForumThread = mongoose.model('ForumThread', forumThreadSchema);
@@ -120,6 +173,9 @@ const Gallery = mongoose.model('Gallery', gallerySchema);
 const donationSchema = new mongoose.Schema({
   amount: Number,
   donor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  // reference: unique Paystack transaction ref — prevents duplicate records
+  // from both the webhook and the manual verify endpoint
+  reference: { type: String, unique: true, sparse: true },
   date: { type: Date, default: Date.now },
 });
 const Donation = mongoose.model('Donation', donationSchema);
@@ -127,12 +183,13 @@ const Donation = mongoose.model('Donation', donationSchema);
 // === BOARD MINUTES SCHEMA ===
 const boardMinuteSchema = new mongoose.Schema({
   title: { type: String, required: true },
-  fileUrl: { type: String, required: true }, // Cloudinary PDF URL
+  fileUrl: { type: String, required: true },
   date: { type: Date, default: Date.now },
 });
 const BoardMinute = mongoose.model('BoardMinute', boardMinuteSchema);
 
-// Auth Middleware
+// ─── Middleware ───────────────────────────────────────────────────────────────
+
 const authMiddleware = (req, res, next) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ msg: 'No token' });
@@ -145,14 +202,14 @@ const authMiddleware = (req, res, next) => {
   }
 };
 
-// Admin Middleware
 const adminMiddleware = async (req, res, next) => {
   const user = await User.findById(req.user.id);
   if (!user || user.role !== 'admin') return res.status(403).json({ msg: 'Admin access required' });
   next();
 };
 
-// Auth Routes
+// ─── Auth Routes ──────────────────────────────────────────────────────────────
+
 app.post('/api/auth/signup', async (req, res) => {
   const { email, password, name, graduationYear } = req.body;
   try {
@@ -197,14 +254,14 @@ app.post('/api/auth/login', async (req, res) => {
     if (!isMatch) return res.status(400).json({ msg: 'Invalid credentials' });
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.json({ 
-      token, 
-      user: { 
-        id: user._id, 
-        email: user.email, 
-        name: user.name, 
-        role: user.role 
-      } 
+    res.json({
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
     });
   } catch (err) {
     console.error(err);
@@ -212,7 +269,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// === FORGOT PASSWORD ROUTE ===
+// === FORGOT PASSWORD ===
 app.post('/api/auth/forgot-password', async (req, res) => {
   const { email } = req.body;
 
@@ -223,16 +280,13 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   try {
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
-      // Security: don't reveal if email exists
       return res.json({ msg: 'If your email is registered, you will receive a reset link shortly' });
     }
 
-    // Generate reset token (expires in 1 hour)
     const resetToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
 
-    // Save token to user
     user.resetPasswordToken = resetToken;
-    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+    user.resetPasswordExpires = Date.now() + 3600000;
     await user.save();
 
     const resetUrl = `https://kghsalumnae.org/reset-password/${resetToken}`;
@@ -268,7 +322,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       console.log('Password reset email sent to:', user.email);
     } catch (emailErr) {
       console.error('Failed to send reset email:', emailErr);
-      // Don't fail the whole request if email fails
     }
 
     res.json({ msg: 'If your email is registered, you will receive a reset link shortly' });
@@ -278,7 +331,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 });
 
-// === RESET PASSWORD ROUTE ===
+// === RESET PASSWORD ===
 app.post('/api/auth/reset-password/:token', async (req, res) => {
   const { password } = req.body;
 
@@ -296,17 +349,13 @@ app.post('/api/auth/reset-password/:token', async (req, res) => {
       return res.status(400).json({ msg: 'Invalid or expired reset link' });
     }
 
-    // Hash new password
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(password, salt);
-
-    // Clear reset fields
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
     await user.save();
 
     console.log('Password successfully reset for:', user.email);
-
     res.json({ msg: 'Password reset successful! You can now log in.' });
   } catch (err) {
     console.error('Reset password error:', err);
@@ -314,7 +363,8 @@ app.post('/api/auth/reset-password/:token', async (req, res) => {
   }
 });
 
-// Profile Routes
+// ─── Profile Routes ───────────────────────────────────────────────────────────
+
 app.get('/api/profile', authMiddleware, async (req, res) => {
   const user = await User.findById(req.user.id).select('-password');
   res.json(user);
@@ -329,7 +379,8 @@ app.put('/api/profile', authMiddleware, upload.single('profilePic'), async (req,
   res.json(user);
 });
 
-// Alumni Directory
+// ─── Alumni Directory ─────────────────────────────────────────────────────────
+
 app.get('/api/directory', authMiddleware, async (req, res) => {
   const { year, location } = req.query;
   const filter = { isApproved: true };
@@ -340,7 +391,8 @@ app.get('/api/directory', authMiddleware, async (req, res) => {
   res.json(users);
 });
 
-// Events
+// ─── Events ───────────────────────────────────────────────────────────────────
+
 app.get('/api/events', async (req, res) => {
   const events = await Event.find().populate('creator', 'name').sort({ date: -1 });
   res.json(events);
@@ -352,35 +404,51 @@ app.post('/api/events', authMiddleware, async (req, res) => {
   res.json(event);
 });
 
-// News
+// ─── News ─────────────────────────────────────────────────────────────────────
+
 app.get('/api/news', async (req, res) => {
   const news = await News.find().populate('author', 'name').sort({ date: -1 });
   res.json(news);
 });
 
-app.post('/api/news', authMiddleware, adminMiddleware, async (req, res) => {
-  const newsItem = new News({ ...req.body, author: req.user.id });
-  await newsItem.save();
-  res.json(newsItem);
-});
-
-// Get single news by ID
-app.get('/api/news/:id', async (req, res) => {
+app.post('/api/news', authMiddleware, adminMiddleware, upload.array('images', 3), async (req, res) => {
   try {
-    const newsItem = await News.findById(req.params.id)
-      .populate('author', 'name');
-
-    if (!newsItem) {
-      return res.status(404).json({ message: 'News not found' });
+    console.log('📰 NEWS POST REQUEST');
+    console.log('Files received:', req.files ? req.files.length : 0);
+    if (req.files) {
+      req.files.forEach((f, i) => console.log(`  Image ${i + 1}:`, f.path));
     }
 
+    const imageUrls = req.files ? req.files.map(f => f.path) : [];
+
+    const newsItem = new News({
+      title: req.body.title,
+      content: req.body.content,
+      author: req.user.id,
+      images: imageUrls,
+    });
+
+    await newsItem.save();
+    const populated = await newsItem.populate('author', 'name');
+    res.json(populated);
+  } catch (err) {
+    console.error('News post error:', err);
+    res.status(500).json({ msg: 'Failed to create news', error: err.message });
+  }
+});
+
+app.get('/api/news/:id', async (req, res) => {
+  try {
+    const newsItem = await News.findById(req.params.id).populate('author', 'name');
+    if (!newsItem) return res.status(404).json({ message: 'News not found' });
     res.json(newsItem);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Forums
+// ─── Forums ───────────────────────────────────────────────────────────────────
+
 app.get('/api/forums', async (req, res) => {
   const threads = await ForumThread.find().populate('author', 'name').sort({ date: -1 });
   res.json(threads);
@@ -399,23 +467,25 @@ app.post('/api/forums/:id/reply', authMiddleware, async (req, res) => {
   res.json(thread);
 });
 
-// Gallery
+// ─── Gallery ──────────────────────────────────────────────────────────────────
+
 app.get('/api/gallery', async (req, res) => {
   const images = await Gallery.find().populate('uploader', 'name').sort({ date: -1 });
   res.json(images);
 });
 
 app.post('/api/gallery', authMiddleware, upload.single('image'), async (req, res) => {
-  const image = new Gallery({ 
-    url: req.file.path, 
-    caption: req.body.caption, 
-    uploader: req.user.id 
+  const image = new Gallery({
+    url: req.file.path,
+    caption: req.body.caption,
+    uploader: req.user.id,
   });
   await image.save();
   res.json(image);
 });
 
-// Paystack Donations - Improved with detailed error logging
+// ─── Donations ────────────────────────────────────────────────────────────────
+
 app.post('/api/donations/create-payment', authMiddleware, async (req, res) => {
   const { amount, currency = 'NGN' } = req.body;
 
@@ -431,39 +501,43 @@ app.post('/api/donations/create-payment', authMiddleware, async (req, res) => {
       email: req.user.email || 'alumni@kghs.com',
       currency: validCurrency,
       reference: `kghs-don-${Date.now()}-${Math.random().toString(36).substring(7)}`,
-      callback_url: 'http://localhost:5174/donations/success',
-      metadata: { 
+      // ✅ Fixed: now points to production domain, not localhost
+      callback_url: 'https://kghsalumnae.org/donations/success',
+      metadata: {
         userId: req.user.id,
-        currency: validCurrency
+        currency: validCurrency,
       },
     });
 
     res.json({ authorization_url: response.data.authorization_url });
   } catch (err) {
-    // Log full error in server terminal
     console.error('Paystack initialization error:', err.response?.data || err.message || err);
-
-    // Send useful error to frontend
     const errorMessage = err.response?.data?.message || err.message || 'Unknown error';
-    res.status(500).json({ 
-      msg: 'Payment initialization failed', 
-      details: errorMessage 
-    });
+    res.status(500).json({ msg: 'Payment initialization failed', details: errorMessage });
   }
 });
 
 app.get('/api/donations/verify/:reference', authMiddleware, async (req, res) => {
   try {
     const response = await paystack.transaction.verify(req.params.reference);
+
     if (response.data.status === 'success') {
-      const donation = new Donation({
-        amount: response.data.amount / 100,
-        donor: req.user.id,
-      });
-      await donation.save();
+      // Check if webhook already recorded this donation
+      const exists = await Donation.findOne({ reference: req.params.reference });
+      if (!exists) {
+        const donation = new Donation({
+          amount: response.data.amount / 100,
+          donor: req.user.id,
+          reference: req.params.reference,
+        });
+        await donation.save();
+        console.log(`Donation recorded via verify: ₦${response.data.amount / 100} (ref: ${req.params.reference})`);
+      } else {
+        console.log(`Donation already recorded via webhook for ref: ${req.params.reference}`);
+      }
       res.json({ success: true, message: 'Donation successful!' });
     } else {
-      res.status(400).json({ success: false });
+      res.status(400).json({ success: false, message: 'Payment not completed' });
     }
   } catch (err) {
     console.error('Paystack verification error:', err.response?.data || err.message);
@@ -475,31 +549,37 @@ app.get('/api/donations', authMiddleware, adminMiddleware, async (req, res) => {
   const donations = await Donation.find().populate('donor', 'name').sort({ date: -1 });
   res.json(donations);
 });
-// === BOARD MINUTES ROUTES ===
-app.get('/api/board-minutes', async (req, res) => {  // ← No authMiddleware here
+
+// Public donations endpoint (used on homepage impact section)
+app.get('/api/public/donations', async (req, res) => {
+  try {
+    const donations = await Donation.find().select('amount date');
+    res.json(donations);
+  } catch (err) {
+    res.status(500).json({ msg: 'Server error' });
+  }
+});
+
+// ─── Board Minutes ────────────────────────────────────────────────────────────
+
+app.get('/api/board-minutes', async (req, res) => {
   try {
     const minutes = await BoardMinute.find().sort({ date: -1 });
     res.json(minutes);
   } catch (err) {
     console.error('Error fetching board minutes:', err);
-    res.status(500).json({ 
-      success: false,
-      message: 'Server error while fetching board minutes' 
-    });
+    res.status(500).json({ success: false, message: 'Server error while fetching board minutes' });
   }
 });
 
 app.post('/api/board-minutes', authMiddleware, adminMiddleware, upload.single('file'), async (req, res) => {
   try {
-    // ────────────────────────────────────────────────────────────────
-    //                  DEBUG LOGGING (very useful on Render)
-    // ────────────────────────────────────────────────────────────────
     console.log('╔════════════════════════════════════════════════════╗');
     console.log('📄 BOARD MINUTES UPLOAD REQUEST');
     console.log('Time:', new Date().toISOString());
     console.log('Admin user ID:', req.user?.id || '(not set)');
     console.log('File received?', !!req.file);
-    
+
     if (req.file) {
       console.log('  • Original name:', req.file.originalname);
       console.log('  • Size:', `${(req.file.size / 1024).toFixed(2)} KB`);
@@ -507,47 +587,30 @@ app.post('/api/board-minutes', authMiddleware, adminMiddleware, upload.single('f
       console.log('  • Cloudinary path:', req.file.path || '(not generated)');
     } else {
       console.log('  ❌ NO FILE RECEIVED');
-      console.log('     Possible issues:');
-      console.log('     • Form field name must be exactly "file"');
-      console.log('     • Request must be multipart/form-data');
-      console.log('     • No file selected or file corrupted');
     }
-    
+
     console.log('Title:', req.body.title || '(missing)');
     console.log('╚════════════════════════════════════════════════════╝');
-    // ────────────────────────────────────────────────────────────────
 
     if (!req.file) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'PDF file is required (field name must be "file")' 
-      });
+      return res.status(400).json({ success: false, message: 'PDF file is required (field name must be "file")' });
     }
 
     if (req.file.size > 10 * 1024 * 1024) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'File too large. Maximum allowed size is 10MB' 
-      });
+      return res.status(400).json({ success: false, message: 'File too large. Maximum allowed size is 10MB' });
     }
 
     if (!req.file.mimetype.includes('pdf')) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Only PDF files are allowed' 
-      });
+      return res.status(400).json({ success: false, message: 'Only PDF files are allowed' });
     }
 
     if (!req.body.title?.trim()) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Title is required' 
-      });
+      return res.status(400).json({ success: false, message: 'Title is required' });
     }
 
     const minute = new BoardMinute({
       title: req.body.title.trim(),
-      fileUrl: req.file.path, // Cloudinary URL
+      fileUrl: req.file.path,
     });
 
     await minute.save();
@@ -555,18 +618,16 @@ app.post('/api/board-minutes', authMiddleware, adminMiddleware, upload.single('f
     res.status(201).json({
       success: true,
       message: 'Board minutes uploaded successfully',
-      data: minute
+      data: minute,
     });
   } catch (err) {
     console.error('Board minutes upload error:', err);
-    res.status(500).json({ 
-      success: false,
-      message: 'Failed to upload board minutes',
-      error: err.message 
-    });
+    res.status(500).json({ success: false, message: 'Failed to upload board minutes', error: err.message });
   }
 });
-// Admin Routes
+
+// ─── Admin Routes ─────────────────────────────────────────────────────────────
+
 app.get('/api/admin/users', authMiddleware, adminMiddleware, async (req, res) => {
   const users = await User.find().select('-password');
   res.json(users);
@@ -607,7 +668,6 @@ app.put('/api/admin/users/:id', authMiddleware, adminMiddleware, async (req, res
         console.log('Approval email sent to:', user.email);
       } catch (emailErr) {
         console.error('Failed to send approval email:', emailErr);
-        // Don't fail approval if email fails
       }
     }
 
@@ -617,6 +677,8 @@ app.put('/api/admin/users/:id', authMiddleware, adminMiddleware, async (req, res
     res.status(500).json({ msg: 'Server error' });
   }
 });
+
+// ─── Start Server ─────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
