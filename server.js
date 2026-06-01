@@ -429,7 +429,6 @@ app.post('/api/donations/create-payment', authMiddleware, async (req, res) => {
       return res.status(400).json({ msg: 'Invalid amount' });
     }
 
-    // ✅ Fetch full user to get their real email
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ msg: 'User not found' });
 
@@ -437,7 +436,7 @@ app.post('/api/donations/create-payment', authMiddleware, async (req, res) => {
 
     const response = await paystack.transaction.initialize({
       amount: Math.round(amount * 100),
-      email: user.email,  // ✅ real alumni email, not fallback
+      email: user.email,
       currency: validCurrency,
       reference: `kghs-don-${Date.now()}-${Math.random().toString(36).substring(7)}`,
       callback_url: 'https://kghsalumnae.org/donations/success',
@@ -579,6 +578,27 @@ app.put('/api/admin/users/:id', authMiddleware, adminMiddleware, async (req, res
       }
     }
 
+    res.json(user);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ msg: 'Server error' });
+  }
+});
+
+// ── Update user role (make admin or remove admin) ─────────────────────────────
+app.put('/api/admin/users/:id/role', authMiddleware, adminMiddleware, async (req, res) => {
+  const { role } = req.body;
+  if (!['admin', 'alumni'].includes(role)) {
+    return res.status(400).json({ msg: 'Invalid role. Must be "admin" or "alumni"' });
+  }
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      { role },
+      { new: true }
+    ).select('-password');
+    if (!user) return res.status(404).json({ msg: 'User not found' });
+    console.log(`Role updated: ${user.email} is now ${role}`);
     res.json(user);
   } catch (err) {
     console.error(err);
