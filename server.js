@@ -63,7 +63,7 @@ app.use(express.json());
 
 app.use(cors({
   origin: [
-    'https://kghs-frontend.onrender.com',
+    'https://kghs-alumni-frontend.vercel.app',
     'https://kghsalumnae.org',
     'https://www.kghsalumnae.org',
   ],
